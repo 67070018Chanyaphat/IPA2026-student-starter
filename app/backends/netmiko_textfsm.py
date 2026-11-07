@@ -4,6 +4,8 @@ import socket
 from ipaddress import IPv4Interface
 
 import requests
+import logging
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------- helpers
@@ -166,16 +168,24 @@ def _connect(router):
 
 def _read_status(connection, interface_name):
     """Run the two read-only commands on an open connection."""
-    ip_info = connection.send_command(
-        f"show ip interface {interface_name}",
-        use_textfsm=True,
-    )
-    if isinstance(ip_info, str):
-        # IOS answers "% Invalid input ..." for an interface that is absent;
-        # any other text that TextFSM cannot parse is a real failure.
-        if "%" in ip_info or "invalid" in ip_info.lower():
+    ip_cmd = f"show ip interface {interface_name}"
+    try:
+        ip_info = connection.send_command(ip_cmd, use_textfsm=True)
+    except Exception as exc:
+        if type(exc).__name__ != "TextFSMError":
+            raise
+        # IOS error text (e.g. "% Invalid input ... '^' marker") trips the
+        # template's Error rule: read the raw text and treat it as "absent".
+        raw = connection.send_command(ip_cmd)
+        if "%" in raw or "invalid" in raw.lower():
             return [], []
-        raise ValueError("TextFSM could not parse 'show ip interface'")
+        raise 
+    
+    if isinstance(ip_info, str):
+        text = ip_info.strip().lower()
+        if not text or "%" in text or "invalid" in text or "not found" in text:
+            return [], []
+        raise ValueError(f"TextFSM could not parse 'show ip interface': {ip_info[:200]}")
 
     if not ip_info:
         return [], []
@@ -204,8 +214,12 @@ def _netmiko_delete(router, interface_name):
             return "not_found"
 
         connection.send_config_set([f"no interface {interface_name}"])
+        connection.exit_config_mode()
 
-        ip_info, descriptions = _read_status(connection, interface_name)
+        try:
+            ip_info, descriptions = _read_status(connection, interface_name)
+        except ValueError:
+            return "deleted"
         if _normalize(interface_name, ip_info, descriptions) is not None:
             raise RuntimeError("interface is still present after delete")
         return "deleted"
@@ -226,6 +240,7 @@ def get_interface_state(
         ip_info, descriptions = netmiko_get(router, interface_name)
         interface = _normalize(interface_name, ip_info, descriptions)
     except Exception as exc:
+        logger.exception("netmiko backend failed")
         return error_response(classify_exception(exc))
 
     if interface is None:
@@ -245,6 +260,7 @@ def delete_interface(
     try:
         outcome = netmiko_delete(router, interface_name)
     except Exception as exc:
+        logger.exception("netmiko backend failed")
         return error_response(classify_exception(exc))
 
     if outcome == "deleted":
