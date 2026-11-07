@@ -1,2 +1,27 @@
 ---
-# TODO: implement the Ansible apply playbook for Part 3.
+- name: Apply Loopback interface configuration
+  hosts: all
+  gather_facts: false
+  connection: ansible.netcommon.network_cli
+
+  vars:
+    ansible_host: "{{ router }}"
+    ansible_network_os: cisco.ios.ios
+    # router login comes from the environment, never from this file
+    ansible_user: "{{ lookup('env', 'ROUTER_USER') }}"
+    ansible_password: "{{ lookup('env', 'ROUTER_PASS') }}"
+    # lab routers: accept unknown SSH host keys, fail fast when unreachable
+    ansible_host_key_checking: false
+    ansible_host_key_auto_add: true
+    ansible_connect_timeout: 10
+
+  tasks:
+    - name: Configure Loopback interface
+      cisco.ios.ios_config:
+        defaults: true
+        parents:
+          - "interface {{ interface_name }}"
+        lines:
+          - "description {{ description }}"
+          - "ip address {{ ipv4_address }} {{ netmask }}"
+          - "{{ 'shutdown' if shutdown | bool else 'no shutdown' }}"
